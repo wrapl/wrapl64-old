@@ -1,0 +1,4 @@
+.metadata
+dev/obj/*
+dev/gen/*
+_minibuild_.db*

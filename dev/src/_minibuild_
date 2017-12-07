@@ -1,0 +1,200 @@
+RLINK := DEV_BIN/"rlink"
+RDOC := DEV_BIN/"rdoc"
+WRAPL_MODULES := meta("WraplModules")
+
+CFLAGS := ["-pipe", "-O3", "-fomit-frame-pointer", "-D_GNU_SOURCE", "-fexpensive-optimizations"]
+CXXFLAGS := ["-pipe", "-O3", "-fomit-frame-pointer", "-D_GNU_SOURCE", "-fexpensive-optimizations"]
+ASFLAGS := ["-DCMOVSUPPORT", "-Ov", "-w-all"]
+GOFLAGS := []
+LDFLAGS := []
+
+if PLATFORM = "Linux" then
+	CFLAGS := old + ["-DLINUX"]
+	CXXFLAGS := old + ["-DLINUX"]
+	ASFLAGS := old + [ASFLAGS, "-DLINUX", "-felf"]
+elseif PLATFORM = "Darwin" then
+	CFLAGS := old + ["-DMACOSX"]
+	CXXFLAGS := old + ["-DMACOSX"]
+	ASFLAGS := old["-DMACOSX"]
+end
+
+c_includes := fun(Source) do
+	var Files := []
+	var Lines := shell("gcc", CFLAGS, "-I", Source:dir, "-M", "-MG", Source)
+	var Start, File := ""
+	var I := for J := 1 .. Lines:length do
+		if Lines[J, J + 2] = ": " then
+			exit J + 2
+		end
+	end
+	loop while I <= Lines:length
+		var Char := Lines[I]
+		if Char <= " " then
+			if File != "" then
+				Files:put(file(File))
+				File := ""
+			end
+		elseif Char = "\\" then
+			I := old + 1
+			Char := Lines[I]
+			if Char = " " then
+				File := '{old} '
+			end
+		else
+			File := '{old}{Char}'
+		end
+		I := old + 1
+	end
+	return Files
+end
+
+c_compile := fun(Object) do
+	var Source := Object % "c"
+	execute('gcc -c', CFLAGS, '-o', Object, '-I', Source:dir, Source)
+end
+
+cpp_includes := fun(Source) do
+	var Files := []
+	var Lines := shell("gcc", CXXFLAGS, "-I", Source:dir, "-M -MG", Source)
+	var Start, File := ""
+	var I := for J := 1 .. Lines:length do
+		if Lines[J, J + 2] = ": " then
+			exit J + 2
+		end
+	end
+	loop while I <= Lines:length
+		var Char := Lines[I]
+		if Char <= " " then
+			if File != "" then
+				Files:put(file(File))
+				File := ""
+			end
+		elseif Char = "\\" then
+			I := old + 1
+			Char := Lines[I]
+			if Char = " " then
+				File := '{old} '
+			end
+		else
+			File := '{old}{Char}'
+		end
+		I := old + 1
+	end
+	return Files
+end
+
+cpp_compile := fun(Object) do
+	var Source := Object % "cpp"
+	execute('gcc -c', CXXFLAGS, '-o', Object, '-I', Source:dir, Source)
+end
+
+asm_includes := fun(Source) do
+	var Files := []
+	var Lines := shell("nasm", ASFLAGS, "-I", Source:dir, "-M", Source)
+	var Start, File := ""
+	var I := for J := 1 .. Lines:length do
+		if Lines[J, J + 2] = ": " then
+			exit J + 2
+		end
+	end
+	loop while I <= Lines:length
+		var Char := Lines[I]
+		if Char <= " " then
+			if File != "" then
+				Files:put(file(File))
+				File := ""
+			end
+		elseif Char = "\\" then
+			I := old + 1
+			Char := Lines[I]
+			if Char = " " then
+				File := '{old} '
+			end
+		else
+			File := '{old}{Char}'
+		end
+		I := old + 1
+	end
+	return Files
+end
+
+asm_compile := fun(Object) do
+	var Source := Object % "asm"
+	execute('nasm', ASFLAGS, '-o', Object, '-I', Source:dir, Source)
+end
+
+SourceTypes := {
+	"c" is [c_includes, c_compile],
+	"cpp" is [cpp_includes, cpp_compile],
+	"asm" is [asm_includes, asm_compile]
+}
+
+c_program := fun(Executable, Objects, Libraries) do
+	Objects := Objects or []
+	Libraries := Libraries or []
+	var Sources := []
+	for Object in Objects do
+		for Functions, Extension in SourceTypes do
+			var Source := Object % Extension
+			if Source:exists then
+				Sources:put(Source)
+				var Scan := Source:scan("INCLUDES", Functions[1])
+				Object[Source, Scan] => Functions[2]
+				exit
+			end
+		end
+	end
+	Executable[Objects, Libraries] => fun(Executable) do
+		execute('gcc', '-o', Executable, Objects, Libraries, LDFLAGS)
+	end
+	DEFAULT[Executable]
+end
+
+GC_VERSION := "7.6.0"
+GC_DIR := file('gc-{GC_VERSION}')
+GC_LIB := file("libgc.a")
+
+ATOMIC_OPS_VERSION := "7.4.4"
+ATOMIC_OPS_DIR := GC_DIR/"libatomic_ops"
+
+CFG_OPTS := {
+	"--enable-munmap" is 4,
+	"--enable-large-config",
+	"--enable-shared" is :false,
+	"--enable-static" is :true,
+	"--enable-parallel-mark",
+	"--disable-gcj-support",
+	"--prefix" is "/tmp",
+	"--includedir" is file(""),
+	"--libdir" is file("")
+}
+
+if PLATFORM = "Linux" then
+	CFG_OPTS := old + {"--enable-redirect-malloc"}
+end
+
+CFLAGS := old + ["-DGC_THREADS", "-DTHREAD_LOCAL_ALLOC", "-DUSE_COMPILER_TLS", "-O2", '-I{file("")}']
+LDFLAGS := old + ["-pthread", "-ldl", "-lconfuse", "-lz", "-Wl,-E"]
+
+GC_LIB[GC_DIR, ATOMIC_OPS_DIR] => fun() do
+	execute("cd", GC_DIR, "&&",
+		"./configure", CFG_OPTS, 'CFLAGS=\"{CFLAGS}\"'
+	)
+	execute("cd", GC_DIR, "&&", "make")
+	execute("cd", GC_DIR, "&&", "make install")
+end
+
+GC_DIR => fun() do
+	execute('wget -nv http://hboehm.info/gc/gc_source/gc-{GC_VERSION}.tar.gz -O- | tar xvzP')
+end
+
+ATOMIC_OPS_DIR[GC_DIR] => fun() do
+	execute("mkdir", "-p", ATOMIC_OPS_DIR)
+	execute("cd", ATOMIC_OPS_DIR, "&&",
+		'wget -nv http://hboehm.info/gc/gc_source/libatomic_ops-{ATOMIC_OPS_VERSION}.tar.gz -O- | tar xvzP --strip-components=1'
+	)
+end
+
+subdir("rlink")
+subdir("riva")
+subdir("lib")
